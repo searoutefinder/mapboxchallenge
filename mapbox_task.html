@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Mapbox</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.4.1/mapbox-gl.css" rel="stylesheet">
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.4.1/mapbox-gl.js"></script>
+    <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.2.2/mapbox-gl-draw.js"></script>
+    <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-draw/v1.2.2/mapbox-gl-draw.css" type="text/css">
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      #map {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 100%;
+      }
+      .calculation-box {
+      height: 75px;
+      width: 150px;
+      position: absolute;
+      bottom: 40px;
+      left: 10px;
+      background-color: rgba(255, 255, 255, 0.9);
+      padding: 15px;
+      text-align: center;
+      }
+       
+      p {
+      font-family: 'Open Sans';
+      margin: 0;
+      font-size: 13px;
+      }      
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <div class="calculation-box">
+      <p id="calculated-area">Click the map to draw a polygon.</p>
+    </div>
+    <script async>
+
+      // REQUIREMENTS
+
+      // TASK 1:
+      //// Add WMS tiles in EPSG3857
+      ////  -> Source: https://services.datafordeler.dk/GeoDanmarkOrto/orto_foraar/1.0.0/WMS?username=ZXRKTZUVQT&password=GIS-Datafordeler0000&SERVICE=WMS&version=1.3.0&REQUEST=GetMap&FORMAT=image%2Fpng&TRANSPARENT=TRUE&STYLES=&WIDTH=256&HEIGHT=256&SRS=EPSG%3A3857&LAYERS=geodanmark_2020_12_5cm&CRS=EPSG%3A3857
+
+      // TASK 2:
+      //// Click on map and load nearest cadastre from endpoint:
+      //// https://api.dataforsyningen.dk/jordstykker?x=${lng}&y=${lat}&format=geojson
+      //// Documentation [DANISH ONLY]: https://dawadocs.dataforsyningen.dk/dok/api/jordstykke
+      //// After click on cadastre end collected properties and geometry from endpoint, the following should happen:
+      //// -> Add cadastre layer with a fill to the map
+      //// -> Zoom to bounds of cadastre
+      //// -> Add a popup with a text containing the ${properties.ejerlavnavn} and ${properties.matrikelnr}
+
+      // TASK 3:
+      //// User should be able to draw on the map and get the total area of the drawn polygon
+
+      // RESOURCES:
+      //// https://docs.mapbox.com/mapbox-gl-js/api/
+      //// https://docs.mapbox.com/mapbox-gl-js/example/      
+
+      const mapModule = (function(window){
+        let _assets = {
+          "popup": new mapboxgl.Popup({"closeButton": false})
+        };
+        let _config = {
+          "endpoints": {
+            "cadastre": "https://api.dataforsyningen.dk/jordstykker?x={lng}&y={lat}&format=geojson"
+          }
+        };
+        let _temp = {
+          "hasSelectedFeature": false
+        };
+
+        function _init(token){
+          mapboxgl.accessToken = token;
+          _assets.map = new mapboxgl.Map({
+            "container": "map",
+            "style": "mapbox://styles/mapbox/streets-v11",
+            "center": [11, 56],
+            "zoom": 6
+          });
+          _assets.map.on("load", _setUpMapContents)
+        }
+
+        function _setUpMapContents(){          
+          _addSources();
+          _addLayers();
+          _addDrawControl();
+          _regEvents();
+          
+        }
+
+        function _addSources(){
+          _assets.map.addSource("orto_foraar_src", {
+            "type": "raster",          
+            "tiles": [
+              "https://services.datafordeler.dk/GeoDanmarkOrto/orto_foraar/1.0.0/WMS?username=ZXRKTZUVQT&password=GIS-Datafordeler0000&SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&BBOX={bbox-epsg-3857}&CRS=EPSG%3A3857&WIDTH=256&HEIGHT=256&STYLES=&FORMAT=image/png&DPI=96&MAP_RESOLUTION=96&FORMAT_OPTIONS=dpi:96&Layers=geodanmark_2020_12_5cm&TRANSPARENT=TRUE"
+            ],
+            "tileSize": 256
+          });
+          _assets.map.addSource("cadastre-poly-src", {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}});
+        }
+
+        function _addLayers(){
+          _assets.map.addLayer({
+            "id": "orto_foraar-lyr",
+            "type": "raster",
+            "source": "orto_foraar_src",
+            "paint": {}
+          });
+          _assets.map.addLayer({
+            "id": "cadastre-lyr",
+            "type": "fill",
+            "source": "cadastre-poly-src",
+            "layout": {},
+            "paint": {
+              "fill-color": "#0080ff",
+              "fill-opacity": 0.5
+            }
+          });                   
+        }
+
+        function _addDrawControl(){
+          _assets.draw = new MapboxDraw({
+            "displayControlsDefault": false,
+            "controls": {
+              "polygon": true,
+              "trash": true
+            },
+            "defaultMode": "simple_select"
+          });
+          _assets.map.addControl(_assets.draw);
+          _assets.map.on('draw.create', _drawHandler);
+          _assets.map.on('draw.delete', _drawHandler);
+          _assets.map.on('draw.update', _drawHandler);                  
+          _assets.map.on('draw.selectionchange', function(e){
+            if(e.features.length > 0){
+              _temp.hasSelectedFeature = true;
+            }
+            else
+            {
+              _temp.hasSelectedFeature = false;
+            }
+          });
+        }     
+        function _regEvents(){          
+          _assets.map.on("click", function(e){
+            if(_assets.draw.getMode() == "simple_select" && _temp.hasSelectedFeature != true && _assets.draw.getSelectedIds().length == 0){
+              let clickedLocationLatLng = e.lngLat;
+              _loadNearestCadastre(clickedLocationLatLng);
+            }
+          });
+        }
+        function _loadNearestCadastre(lngLat){
+          fetch(_config.endpoints.cadastre.replace("{lat}", lngLat.lat).replace("{lng}", lngLat.lng))
+            .then(function(response){
+              return response.json();
+            })
+            .then(function(data){
+              _updateSource("cadastre-poly-src", data);
+              if(data.features.length >0 && typeof data.features[0].bbox != "undefined"){
+                let bounds = _createBoundsFromRaw(data.features[0].bbox);
+                let popup_anchor_ll = bounds.getCenter();
+
+                _assets.map.fitBounds(bounds);
+                _openPopup(popup_anchor_ll, data.features[0].properties);
+              }
+              else{
+                alert("BBOX information is not available.");
+              }
+            })
+          
+        }
+        function _updateSource(sourceID, data){
+          _assets.map.getSource(sourceID).setData(data);
+        }
+        function _createBoundsFromRaw(boundsArray){
+          let ll_like = [[boundsArray[0], boundsArray[1]], [boundsArray[2], boundsArray[3]]];
+          let bounds = mapboxgl.LngLatBounds.convert(ll_like);
+          return bounds;
+        }        
+        function _openPopup(anchor, data){
+          _assets.popup
+            .setLngLat(anchor)
+            .setHTML(`${data.ejerlavnavn} - ${data.matrikelnr}`)
+            .addTo(_assets.map);
+        }
+        function _drawHandler(e){          
+          let data = _assets.draw.getAll();
+          if (data.features.length > 0) {
+            let area = turf.area(data);
+            let rounded_area = Math.round(area * 100) / 100;
+            document.querySelector("#calculated-area").innerHTML = `Total area is ${rounded_area} sqm(s)`;
+          }else{
+            if (e.type == 'draw.delete'){
+              _temp.hasSelectedFeature = false;
+              document.querySelector("#calculated-area").innerHTML = "Click the map to draw a polygon";
+            }
+          }
+        }
+        return {
+          "initialize": _init
+        }
+      })(window);
+
+
+      mapModule.initialize("pk.eyJ1IjoibWlra2VsZHVpZiIsImEiOiJjazR6dWI2azQwZHpjM2pvZDBjbTl2ZGoxIn0.cwKHg2MhjRw5Z1cdLbYnEQ");
+
+    </script>
+  </body>
+</html>
